@@ -427,3 +427,15 @@ body{
   .orb{ animation: none; }
   .btn{ transition: none; }
 }
+
+
+/* Compact camera preview */
+.camera-frame--compact{
+  min-height: 180px;
+  max-height: 210px;
+}
+
+.video--compact{
+  max-height: 210px;
+  object-fit: cover;
+}

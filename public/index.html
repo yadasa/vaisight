@@ -8,10 +8,7 @@
   />
   <title>Vaisight Price Reader</title>
 
-  <!-- Separate CSS -->
   <link rel="stylesheet" href="/styles.css" />
-
-  <!-- iOS: better dark theme rendering -->
   <meta name="color-scheme" content="dark" />
 </head>
 
@@ -45,27 +42,32 @@
       <section class="card glass camera-card">
         <div class="card-header">
           <h2 class="card-title">Camera</h2>
+
           <div class="actions">
             <button id="startBtn" class="btn primary" type="button">
               Start
             </button>
+
+            <button id="voiceBtn" class="btn" type="button">
+              Enable Voice
+            </button>
+
             <button id="scanBtn" class="btn" type="button" disabled>
               Scan now
             </button>
           </div>
         </div>
 
-        <div class="camera-frame">
+        <div class="camera-frame camera-frame--compact">
           <video
             id="video"
             autoplay
             playsinline
             muted
-            class="video"
+            class="video video--compact"
             aria-label="Live camera preview"
           ></video>
 
-          <!-- subtle overlay, no guidance spam -->
           <div class="reticle" aria-hidden="true">
             <div class="reticle-inner"></div>
           </div>
@@ -81,6 +83,7 @@
       <section class="card glass result-card">
         <div class="card-header">
           <h2 class="card-title">Result</h2>
+
           <div class="toggles">
             <label class="toggle">
               <input id="ttsToggle" type="checkbox" checked />
@@ -107,9 +110,9 @@
         <div class="tips">
           <h3 class="tips-title">Quick tips</h3>
           <ul class="tips-list">
-            <li>Move closer until the tag fills most of the view.</li>
+            <li>Move closer until the price is large and sharp.</li>
             <li>Hold still for a second for best focus.</li>
-            <li>Prefer centering the price in the reticle area.</li>
+            <li>Keep the price near the center reticle area.</li>
           </ul>
         </div>
 
@@ -131,6 +134,7 @@
     const hintText = document.getElementById('hintText');
 
     const startBtn = document.getElementById('startBtn');
+    const voiceBtn = document.getElementById('voiceBtn');
     const scanBtn = document.getElementById('scanBtn');
 
     const ttsToggle = document.getElementById('ttsToggle');
@@ -140,7 +144,6 @@
     const priceMeta = document.getElementById('priceMeta');
     const buildStamp = document.getElementById('buildStamp');
 
-    // Optional: stamp for quickly confirming fresh deploys
     buildStamp.textContent = `Loaded ${new Date().toLocaleString()}`;
 
     let lastSpokenPrice = null;
@@ -153,20 +156,26 @@
     let cameraStarted = false;
 
     function setStatus(state, text) {
-      statusPill.dataset.state = state; // css hooks
+      statusPill.dataset.state = state;
       statusText.textContent = text;
     }
 
+    // More reliable TTS: cancel any stuck speech before speaking
     function speak(text) {
       if (!ttsToggle.checked) return;
 
-      // iOS/Android: avoids piling utterances
-      if (speechSynthesis.speaking) return;
+      try {
+        // iOS/Chrome mobile sometimes gets "stuck"; cancel clears the queue/state.
+        speechSynthesis.cancel();
 
-      const msg = new SpeechSynthesisUtterance(text);
-      msg.rate = 0.95;
-      msg.pitch = 1.0;
-      speechSynthesis.speak(msg);
+        const msg = new SpeechSynthesisUtterance(text);
+        msg.rate = 0.95;
+        msg.pitch = 1.0;
+
+        speechSynthesis.speak(msg);
+      } catch (e) {
+        console.error('TTS failed:', e);
+      }
     }
 
     async function startCamera() {
@@ -177,7 +186,6 @@
 
       video.srcObject = stream;
 
-      // Wait for metadata so videoWidth/videoHeight are available
       await new Promise((resolve) => {
         if (video.readyState >= 2) return resolve();
         video.onloadedmetadata = () => resolve();
@@ -188,7 +196,6 @@
       hintText.innerHTML = 'Camera on. Center the price near the reticle and hold still.';
       setStatus('ready', 'Ready');
 
-      // Start auto if enabled
       if (autoToggle.checked) enableAutoScan();
     }
 
@@ -211,7 +218,6 @@
       inFlight = true;
       setStatus('scanning', 'Scanning…');
 
-      // Capture full frame. (Next improvement could crop center region only.)
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       ctx.drawImage(video, 0, 0);
@@ -248,7 +254,7 @@
 
           if (stabilityCount >= STABILITY_REQUIRED) {
             speak(`Price is ${price}`);
-            stabilityCount = 0; // prevent repeat spam
+            stabilityCount = 0;
             setStatus('ready', 'Ready');
             priceMeta.textContent = 'Locked. Move to a new tag to scan again.';
           } else {
@@ -260,25 +266,17 @@
           priceMeta.textContent = 'Network/OCR error. Try again.';
         } finally {
           inFlight = false;
-          if (statusPill.dataset.state !== 'error') {
-            // keep scanning state only while request is active
-            setStatus('ready', 'Ready');
-          }
+          if (statusPill.dataset.state !== 'error') setStatus('ready', 'Ready');
         }
       }, 'image/jpeg', 0.72);
     }
 
-    // UI wiring
+    // Buttons / toggles
     startBtn.addEventListener('click', async () => {
       try {
         setStatus('starting', 'Starting…');
         startBtn.disabled = true;
         await startCamera();
-
-        // Prime audio permission on iOS by speaking a short, optional phrase:
-        // (If you don’t want this, remove the next line.)
-        speak('Vaisight ready');
-
       } catch (err) {
         console.error(err);
         setStatus('error', 'Camera blocked');
@@ -287,8 +285,13 @@
       }
     });
 
+    // Explicit gesture to unlock audio on mobile browsers
+    voiceBtn.addEventListener('click', () => {
+      speak('Voice enabled');
+      priceMeta.textContent = 'Voice enabled. Scanning will speak once stable.';
+    });
+
     scanBtn.addEventListener('click', async () => {
-      // If auto is on, manual scans still work.
       await captureAndSend();
     });
 
@@ -298,7 +301,6 @@
       else disableAutoScan();
     });
 
-    // Initial state
     setStatus('idle', 'Idle');
   </script>
 </body>
