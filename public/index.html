@@ -2,52 +2,221 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+  />
   <title>Vaisight Price Reader</title>
+
+  <!-- Separate CSS -->
+  <link rel="stylesheet" href="/styles.css" />
+
+  <!-- iOS: better dark theme rendering -->
+  <meta name="color-scheme" content="dark" />
 </head>
+
 <body>
-  <h2>Vaisight Price Reader</h2>
+  <div class="bg-orbs" aria-hidden="true">
+    <span class="orb orb-a"></span>
+    <span class="orb orb-b"></span>
+    <span class="orb orb-c"></span>
+  </div>
 
-  <video id="video" autoplay playsinline style="width:100%;max-height:300px;"></video>
-  <canvas id="canvas" style="display:none;"></canvas>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <span class="logo-dot"></span>
+          <span class="logo-ring"></span>
+        </div>
+        <div class="brand-text">
+          <h1>Vaisight</h1>
+          <p class="subtitle">Price Reader</p>
+        </div>
+      </div>
 
-  <p id="output">Point camera at a price tag</p>
+      <div class="status-pill" id="statusPill" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text">Initializing…</span>
+      </div>
+    </header>
+
+    <section class="grid">
+      <section class="card glass camera-card">
+        <div class="card-header">
+          <h2 class="card-title">Camera</h2>
+          <div class="actions">
+            <button id="startBtn" class="btn primary" type="button">
+              Start
+            </button>
+            <button id="scanBtn" class="btn" type="button" disabled>
+              Scan now
+            </button>
+          </div>
+        </div>
+
+        <div class="camera-frame">
+          <video
+            id="video"
+            autoplay
+            playsinline
+            muted
+            class="video"
+            aria-label="Live camera preview"
+          ></video>
+
+          <!-- subtle overlay, no guidance spam -->
+          <div class="reticle" aria-hidden="true">
+            <div class="reticle-inner"></div>
+          </div>
+
+          <div class="hint" id="hintText" aria-live="polite">
+            Tap <strong>Start</strong> to enable camera.
+          </div>
+        </div>
+
+        <canvas id="canvas" class="sr-only" aria-hidden="true"></canvas>
+      </section>
+
+      <section class="card glass result-card">
+        <div class="card-header">
+          <h2 class="card-title">Result</h2>
+          <div class="toggles">
+            <label class="toggle">
+              <input id="ttsToggle" type="checkbox" checked />
+              <span class="toggle-ui" aria-hidden="true"></span>
+              <span class="toggle-label">Voice</span>
+            </label>
+
+            <label class="toggle">
+              <input id="autoToggle" type="checkbox" checked />
+              <span class="toggle-ui" aria-hidden="true"></span>
+              <span class="toggle-label">Auto</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="price-box">
+          <div class="price-label">Detected price</div>
+          <div class="price-value" id="priceValue">—</div>
+          <div class="price-meta" id="priceMeta">Waiting for scan…</div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="tips">
+          <h3 class="tips-title">Quick tips</h3>
+          <ul class="tips-list">
+            <li>Move closer until the tag fills most of the view.</li>
+            <li>Hold still for a second for best focus.</li>
+            <li>Prefer centering the price in the reticle area.</li>
+          </ul>
+        </div>
+
+        <footer class="footer">
+          <span class="footer-badge">Liquid Glass UI</span>
+          <span class="footer-muted" id="buildStamp"></span>
+        </footer>
+      </section>
+    </section>
+  </main>
 
   <script>
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-    const output = document.getElementById('output');
+
+    const statusPill = document.getElementById('statusPill');
+    const statusText = statusPill.querySelector('.status-text');
+    const hintText = document.getElementById('hintText');
+
+    const startBtn = document.getElementById('startBtn');
+    const scanBtn = document.getElementById('scanBtn');
+
+    const ttsToggle = document.getElementById('ttsToggle');
+    const autoToggle = document.getElementById('autoToggle');
+
+    const priceValue = document.getElementById('priceValue');
+    const priceMeta = document.getElementById('priceMeta');
+    const buildStamp = document.getElementById('buildStamp');
+
+    // Optional: stamp for quickly confirming fresh deploys
+    buildStamp.textContent = `Loaded ${new Date().toLocaleString()}`;
 
     let lastSpokenPrice = null;
     let stabilityCount = 0;
     const STABILITY_REQUIRED = 2;
+
     const SCAN_INTERVAL = 2000;
     let inFlight = false;
+    let autoTimer = null;
+    let cameraStarted = false;
 
-    async function startCamera() {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
-      });
-      video.srcObject = stream;
+    function setStatus(state, text) {
+      statusPill.dataset.state = state; // css hooks
+      statusText.textContent = text;
     }
 
     function speak(text) {
+      if (!ttsToggle.checked) return;
+
+      // iOS/Android: avoids piling utterances
       if (speechSynthesis.speaking) return;
+
       const msg = new SpeechSynthesisUtterance(text);
       msg.rate = 0.95;
+      msg.pitch = 1.0;
       speechSynthesis.speak(msg);
     }
 
-    async function captureAndSend() {
-      if (inFlight || video.videoWidth === 0) return;
-      inFlight = true;
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false
+      });
 
+      video.srcObject = stream;
+
+      // Wait for metadata so videoWidth/videoHeight are available
+      await new Promise((resolve) => {
+        if (video.readyState >= 2) return resolve();
+        video.onloadedmetadata = () => resolve();
+      });
+
+      cameraStarted = true;
+      scanBtn.disabled = false;
+      hintText.innerHTML = 'Camera on. Center the price near the reticle and hold still.';
+      setStatus('ready', 'Ready');
+
+      // Start auto if enabled
+      if (autoToggle.checked) enableAutoScan();
+    }
+
+    function enableAutoScan() {
+      disableAutoScan();
+      autoTimer = setInterval(() => captureAndSend(), SCAN_INTERVAL);
+      priceMeta.textContent = 'Auto scanning…';
+    }
+
+    function disableAutoScan() {
+      if (autoTimer) clearInterval(autoTimer);
+      autoTimer = null;
+      priceMeta.textContent = 'Auto scan paused.';
+    }
+
+    async function captureAndSend() {
+      if (!cameraStarted) return;
+      if (inFlight || video.videoWidth === 0) return;
+
+      inFlight = true;
+      setStatus('scanning', 'Scanning…');
+
+      // Capture full frame. (Next improvement could crop center region only.)
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       ctx.drawImage(video, 0, 0);
 
-      canvas.toBlob(async blob => {
+      canvas.toBlob(async (blob) => {
         try {
           const formData = new FormData();
           formData.append('frame', blob, 'frame.jpg');
@@ -61,9 +230,12 @@
 
           if (!price) {
             stabilityCount = 0;
-            inFlight = false;
+            setStatus('ready', 'Ready');
+            priceMeta.textContent = 'No price detected. Try moving closer.';
             return;
           }
+
+          priceValue.textContent = price;
 
           if (price === lastSpokenPrice) {
             stabilityCount++;
@@ -72,23 +244,62 @@
             stabilityCount = 1;
           }
 
-          output.innerText = `Price: ${price}`;
+          priceMeta.textContent = `Seen ${stabilityCount}/${STABILITY_REQUIRED} times`;
 
           if (stabilityCount >= STABILITY_REQUIRED) {
             speak(`Price is ${price}`);
             stabilityCount = 0; // prevent repeat spam
+            setStatus('ready', 'Ready');
+            priceMeta.textContent = 'Locked. Move to a new tag to scan again.';
+          } else {
+            setStatus('scanning', 'Scanning…');
           }
-
-        } catch (e) {
-          console.error(e);
+        } catch (err) {
+          console.error(err);
+          setStatus('error', 'Error');
+          priceMeta.textContent = 'Network/OCR error. Try again.';
         } finally {
           inFlight = false;
+          if (statusPill.dataset.state !== 'error') {
+            // keep scanning state only while request is active
+            setStatus('ready', 'Ready');
+          }
         }
-      }, 'image/jpeg', 0.7);
+      }, 'image/jpeg', 0.72);
     }
 
-    startCamera();
-    setInterval(captureAndSend, SCAN_INTERVAL);
+    // UI wiring
+    startBtn.addEventListener('click', async () => {
+      try {
+        setStatus('starting', 'Starting…');
+        startBtn.disabled = true;
+        await startCamera();
+
+        // Prime audio permission on iOS by speaking a short, optional phrase:
+        // (If you don’t want this, remove the next line.)
+        speak('Vaisight ready');
+
+      } catch (err) {
+        console.error(err);
+        setStatus('error', 'Camera blocked');
+        hintText.textContent = 'Camera permission denied. Enable it in browser settings.';
+        startBtn.disabled = false;
+      }
+    });
+
+    scanBtn.addEventListener('click', async () => {
+      // If auto is on, manual scans still work.
+      await captureAndSend();
+    });
+
+    autoToggle.addEventListener('change', () => {
+      if (!cameraStarted) return;
+      if (autoToggle.checked) enableAutoScan();
+      else disableAutoScan();
+    });
+
+    // Initial state
+    setStatus('idle', 'Idle');
   </script>
 </body>
 </html>
